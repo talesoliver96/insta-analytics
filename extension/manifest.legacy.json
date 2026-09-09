@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Insta Unfollow Premium",
+  "version": "4.0.0",
+  "description": "Painel premium para comparar seguidores e seguindo no Instagram.",
+  "permissions": ["storage", "tabs", "activeTab"],
+  "host_permissions": ["https://www.instagram.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Abrir Insta Unfollow Premium"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.instagram.com/*"],
+      "js": ["content.js"],
+      "css": ["panel.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "manifest_version": 3,
+  "name": "Insta Analytics",
+  "version": "5.6.3",
+  "description": "Acompanhe mudanças na sua própria rede do Instagram com histórico, comparações e analytics.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.instagram.com/*",
+    "https://*.supabase.co/*"
+  ],
+  "background": {
+    "service_worker": "src/background/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Abrir Insta Analytics",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.instagram.com/*"
+      ],
+      "js": [
+        "src/config/app-config.js",
+        "src/config/product-config.js",
+        "src/domain/user-normalizer.js",
+        "src/collector/collection-quality.js",
+        "src/domain/comparison-service.js",
+        "src/services/local-cache.js",
+        "src/services/auth-service.js",
+        "src/services/supabase-service.js",
+        "src/services/plan-service.js",
+        "src/services/billing-service.js",
+        "src/collector/instagram-client.js",
+        "src/collector/profile-resolver.js",
+        "src/collector/friendship-collector.js",
+        "src/domain/snapshot-service.js",
+        "src/domain/reliable-diff-service.js",
+        "src/services/engagement-service.js",
+        "src/ui/panel.js",
+        "src/ui/advanced-panel.js",
+        "src/content/content.js"
+      ],
+      "css": [
+        "src/styles/panel.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
