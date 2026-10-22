@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Insta Analytics",
-  "version": "5.6.3",
+  "version": "5.6.12",
   "description": "Acompanhe mudanças na sua própria rede do Instagram com histórico, comparações e analytics.",
   "permissions": [
-    "storage"
+    "storage",
+    "unlimitedStorage"
   ],
   "host_permissions": [
     "https://www.instagram.com/*",

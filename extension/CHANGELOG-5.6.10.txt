@@ -1,0 +1,1 @@
+v5.6.10: validação por paginação quando contadores externos ausentes; rejeição de queda abrupta > max(10,3%) sem contador; histórico existente preservado; logs de diagnóstico. Não limpa storage nem altera Supabase.

@@ -8,7 +8,7 @@ window.InstaAnalytics = window.InstaAnalytics || {};
 
     const rawExpected = Number(options?.expectedCount);
     const expectedCount =
-      Number.isFinite(rawExpected) && rawExpected >= 0
+      options?.expectedCount !== null && options?.expectedCount !== undefined && options?.expectedCount !== "" && Number.isFinite(rawExpected) && rawExpected >= 0
         ? rawExpected
         : null;
 
@@ -17,6 +17,10 @@ window.InstaAnalytics = window.InstaAnalytics || {};
     let stagnantPages = 0;
     let completed = false;
     let stopReason = "unknown";
+    let receivedTotal = 0;
+    let invalidTotal = 0;
+    let duplicateTotal = 0;
+    const pageStats = [];
 
     while (true) {
       page += 1;
@@ -34,19 +38,23 @@ window.InstaAnalytics = window.InstaAnalytics || {};
       );
 
       const before = users.length;
+      const received = Array.isArray(data?.users) ? data.users.length : 0;
+      receivedTotal += received;
 
       for (const raw of data?.users || []) {
         const user = IA.normalizeUser(raw);
-        if (!user) continue;
+        if (!user) { invalidTotal++; continue; }
 
         const key = IA.stableKey(user);
-        if (!key || seen.has(key)) continue;
+        if (!key) { invalidTotal++; continue; }
+        if (seen.has(key)) { duplicateTotal++; continue; }
 
         seen.add(key);
         users.push(user);
       }
 
       stagnantPages = users.length === before ? stagnantPages + 1 : 0;
+      pageStats.push({ page, received, uniqueAdded: users.length - before, hasNext: Boolean(data?.next_max_id) });
 
       onProgress?.({
         page,
@@ -77,6 +85,7 @@ window.InstaAnalytics = window.InstaAnalytics || {};
         completed,
         stopReason,
         pages: page,
+        receivedTotal, invalidTotal, duplicateTotal, pageStats,
         collected: users.length,
         expectedCount,
         missing:

@@ -1,0 +1,9 @@
+Insta Analytics v5.6.12 — correção de quota
+
+- Adiciona permissão unlimitedStorage ao manifest MV3 para remover o limite padrão de 10 MB do chrome.storage.local.
+- Preserva os snapshots existentes, dados de conta, histórico e mudanças pendentes.
+- Mantém o coletor, a validação de paginação e o fluxo de finalização da v5.6.11 sem alterações.
+
+INSTALAÇÃO: faça backup da pasta extension atual, extraia e substitua os arquivos NO MESMO CAMINHO da extensão instalada. Em chrome://extensions clique Atualizar. Não remova a extensão nem limpe seus dados.
+
+OBS: A permissão não recupera uma coleta que falhou ao salvar; execute nova coleta somente quando necessário.

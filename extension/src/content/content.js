@@ -5,6 +5,17 @@
   const IA = window.InstaAnalytics;
   const root = IA.ensurePanel();
   let detectedAccount = null;
+  // Cached accounts are for read-only history, never authorization to collect.
+  async function showOfflineHistory() {
+    const data = await chrome.storage.local.get("ia_accounts_v1");
+    const accounts = Object.values(data.ia_accounts_v1 || {}).filter(a => a?.username && a?.userId);
+    // Never guess among multiple Instagram identities.
+    if (accounts.length !== 1) return;
+    const account = accounts[0];
+    await loadAccountIntoPanel(account.username);
+    IA.setPanelStatus(`Histórico salvo de @${account.username} disponível em modo leitura. Para coletar, confirme sua sessão do Instagram em Atualizar usuário.`, "error");
+  }
+
 
   async function loadAccountIntoPanel(username) {
     const normalized = IA.normalizeAccountKey(username);
@@ -20,12 +31,19 @@
 
   async function detectOwnAccount({ silent = false } = {}) {
     try {
+      const gate = await IA.getInstagramRequestStatus();
+      if (gate.limited) {
+        const minutes = Math.max(1, Math.ceil(gate.retryAfterMs / 60000));
+        const error = new Error(`O Instagram limitou as consultas. Aguarde aproximadamente ${minutes} minuto(s) antes de tentar novamente.`);
+        error.code = "RATE_LIMITED";
+        throw error;
+      }
       if (!silent) {
         IA.setPanelStatus("Detectando sua conta do Instagram...");
       }
 
       const detected = await IA.detectCurrentInstagramAccount();
-      const resolved = await IA.resolveProfile(detected.username);
+      const resolved = { userId: detected.userId, profileInfo: detected.profileInfo };
 
       if (String(resolved.userId) !== String(detected.userId)) {
         const error = new Error(
@@ -62,9 +80,11 @@
       detectedAccount = null;
       IA.setDetectedInstagramAccount(null);
 
+      // Detection failure must never clear snapshots or mutate saved identity.
+      await showOfflineHistory().catch(() => {});
       if (!silent) {
         IA.setPanelStatus(
-          `Não foi possível detectar sua conta: ${error.message}`,
+          `Não foi possível validar sua conta: ${error.message}. Histórico anterior preservado.`,
           "error"
         );
       }
@@ -78,9 +98,25 @@
 
   root.querySelector("#ia-collect").onclick = async () => {
     let access = null;
+    let stage = "início";
+    let watchdog = null;
+    const markStage = (name) => {
+      stage = name;
+      console.info(`[Insta Analytics v5.6.11] ${name}`, new Date().toISOString());
+    };
+    // Never start a collection while a previously reported rate limit is active.
+    const gate = await IA.getInstagramRequestStatus();
+    if (gate.limited) {
+      IA.setPanelStatus(`Instagram temporariamente limitado. Aguarde aproximadamente ${Math.max(1, Math.ceil(gate.retryAfterMs / 60000))} minuto(s). Seu histórico continua disponível.`, "warning");
+      return;
+    }
 
     IA.setCollecting(true);
     IA.setPanelProgress(null);
+    // Diagnostic watchdog: never writes data, never interrupts an in-flight save.
+    watchdog = setInterval(() => {
+      console.warn(`[Insta Analytics v5.6.11] Ainda executando: ${stage}`);
+    }, 30000);
 
     try {
       if (!detectedAccount?.userId) {
@@ -100,9 +136,11 @@
 
       IA.setPanelStatus(`Confirmando @${username}...`);
 
-      const { userId, profileInfo } = await IA.resolveProfile(username);
+      // Reuse the account already detected for this session. Do not add
+      // an unnecessary profile request immediately before collection.
+      const { userId, profileInfo } = detectedAccount;
 
-      if (String(userId) !== String(detectedAccount.userId)) {
+      if (String(userId) !== String(detectedAccount.userId) || profileInfo.username !== username) {
         const error = new Error(
           "A conta do Instagram mudou. Clique em Atualizar usuário e tente novamente."
         );
@@ -164,6 +202,21 @@
         }
       );
 
+      // Diagnóstico local: apenas métricas, sem nomes, IDs, tokens ou listas de pessoas.
+      const diagnostic = {
+        version: "5.6.10-safe-validation", timestamp: new Date().toISOString(),
+        profileCounters: {
+          followers: profileInfo?.followerCount ?? null,
+          following: profileInfo?.followingCount ?? null
+        },
+        followers: followersResult?.meta ?? null,
+        following: followingResult?.meta ?? null
+      };
+      window.__IA_LAST_COLLECTION_DIAGNOSTIC__ = diagnostic;
+      console.info("[Insta Analytics DIAGNOSTICO] Resumo da coleta:", diagnostic);
+      console.info("[Insta Analytics DIAGNOSTICO] JSON:", JSON.stringify(diagnostic, null, 2));
+
+      markStage("criando snapshot");
       const snapshot = IA.createSnapshot({
         username,
         userId,
@@ -172,21 +225,54 @@
         followingResult
       });
 
+      markStage("carregando histórico local");
       const existing = IA.rebuildReliableHistory
         ? IA.rebuildReliableHistory(
             await IA.loadLocalSnapshots(username)
           )
         : await IA.loadLocalSnapshots(username);
 
+      diagnostic.quality = snapshot?.quality ?? null;
+      console.info("[Insta Analytics DIAGNOSTICO] Qualidade:", diagnostic.quality);
+
       const qualityStatus =
         snapshot?.quality?.status || "unknown";
 
       const comparisonEligible =
-        snapshot?.quality?.comparisonEligible === true;
+        snapshot?.quality?.comparisonEligible === true &&
+        followersResult?.meta?.completed === true &&
+        followingResult?.meta?.completed === true;
+
+      // Proteção adicional: sem contadores, não transformar uma queda brusca
+      // em unfollows. A referência histórica nunca é alterada nesta checagem.
+      const previousEligible = existing.find(item =>
+        item?.comparisonEligible === true && item?.username === snapshot.username &&
+        Array.isArray(item.followers) && Array.isArray(item.following)
+      );
+      const abruptDrop = snapshot.quality?.verificationMethod === "end_of_pagination" &&
+        previousEligible && ["followers", "following"].some(key => {
+          const oldCount = previousEligible[key].length;
+          const newCount = snapshot[key].length;
+          return oldCount > 0 && oldCount - newCount > Math.max(10, Math.ceil(oldCount * 0.03));
+        });
+      if (abruptDrop) {
+        snapshot.quality.status = "suspicious";
+        snapshot.quality.comparisonEligible = false;
+        snapshot.comparisonEligible = false;
+        snapshot.quality.reason = "Queda superior ao limite de segurança sem contadores verificáveis. Histórico preservado.";
+      }
+      console.info("[Insta Analytics] validação", {
+        status: snapshot.quality?.status,
+        method: snapshot.quality?.verificationMethod || "profile_count",
+        eligible: snapshot.quality?.comparisonEligible,
+        abruptDrop: Boolean(abruptDrop),
+        previousCounts: previousEligible ? {followers: previousEligible.followers.length, following: previousEligible.following.length} : null
+      });
 
       if (
         qualityStatus === "suspicious" ||
-        !comparisonEligible
+        !comparisonEligible ||
+        abruptDrop
       ) {
         await IA.setPanelData(snapshot, existing);
         IA.navigatePanel("overview");
@@ -197,25 +283,29 @@
           "A coleta não passou na validação de integridade.";
 
         IA.setPanelStatus(
-          `Coleta descartada: ${reason}`,
+          `Coleta não salva: ${reason}`,
           "warning"
         );
 
         return;
       }
 
+      markStage("calculando diferenças confiáveis");
       const reliable = IA.buildReliableDiff(
         snapshot,
         existing
       );
 
+      markStage("anexando diferenças ao snapshot");
       IA.attachReliableSnapshotDiff(snapshot, reliable);
 
+      markStage("gravando snapshot local (não interromper)");
       const savedRaw = await IA.saveLocalSnapshot(
         username,
         snapshot
       );
 
+      markStage("snapshot local gravado; reconstruindo histórico");
       const saved = IA.rebuildReliableHistory
         ? IA.rebuildReliableHistory(savedRaw)
         : savedRaw;
@@ -223,7 +313,8 @@
       let usageMessage = "";
 
       try {
-        await IA.commitCollectionUse(access, snapshot);
+        markStage("registrando uso do plano");
+        await Promise.race([IA.commitCollectionUse(access, snapshot), new Promise((_, reject) => setTimeout(() => reject(new Error("Tempo limite ao registrar uso")), 20000))]);
       } catch (usageError) {
         usageMessage =
           ` · aviso de limite: ${usageError.message}`;
@@ -239,7 +330,8 @@
             session?.user?.id &&
             IA.getSupabaseConfig().configured
           ) {
-            await IA.syncSnapshotToSupabase(snapshot);
+            markStage("sincronizando Supabase");
+            await Promise.race([IA.syncSnapshotToSupabase(snapshot), new Promise((_, reject) => setTimeout(() => reject(new Error("Tempo limite na sincronização")), 25000))]);
             syncMessage = " · sincronizada no Supabase";
           }
         }
@@ -249,7 +341,8 @@
       }
 
       try {
-        await IA.recordNotificationsForSnapshot?.(snapshot);
+        markStage("registrando notificações");
+        await Promise.race([Promise.resolve(IA.recordNotificationsForSnapshot?.(snapshot)), new Promise((_, reject) => setTimeout(() => reject(new Error("Tempo limite nas notificações")), 15000))]);
       } catch (error) {
         console.warn(
           "[Insta Analytics] notifications:",
@@ -257,9 +350,11 @@
         );
       }
 
+      markStage("atualizando painel");
       await IA.setPanelData(saved[0], saved);
       IA.navigatePanel("overview");
-      await IA.renderAuthPanel();
+      markStage("atualizando autenticação no painel");
+      await Promise.race([IA.renderAuthPanel(), new Promise((_, reject) => setTimeout(() => reject(new Error("Tempo limite ao atualizar autenticação")), 15000))]);
 
       const quality =
         snapshot.quality?.status || "unknown";
@@ -289,6 +384,7 @@
           ? ` · ${confirmed} mudança(s) confirmada(s)`
           : "";
 
+      markStage("finalização concluída");
       IA.setPanelStatus(
         `Coleta concluída (${label})${diffMsg}${syncMessage}${usageMessage}.`,
         quality === "suspicious"
@@ -296,6 +392,7 @@
           : "success"
       );
     } catch (error) {
+      console.error(`[Insta Analytics v5.6.11] Falha na etapa: ${stage}`, error);
       if (error.code === "COLLECTION_LIMIT") {
         IA.setPanelStatus(error.message, "warning");
         await IA.renderAuthPanel();
@@ -324,28 +421,16 @@
         );
       }
     } finally {
+      if (watchdog) clearInterval(watchdog);
       IA.setPanelProgress(null);
       IA.setCollecting(false);
     }
   };
 
   (async () => {
-    try {
-      const optimized = await IA.optimizeLocalSnapshotStorage?.();
+    // Never rewrite, trim or migrate historical snapshots on panel startup.
 
-      if (optimized?.savedBytes > 0) {
-        console.info(
-          "[Insta Analytics] storage otimizado:",
-          `${Math.round(optimized.beforeBytes / 1024)} KB -> ${Math.round(optimized.afterBytes / 1024)} KB`
-        );
-      }
-    } catch (error) {
-      console.warn(
-        "[Insta Analytics] não foi possível otimizar o cache local:",
-        error
-      );
-    }
-
+    await showOfflineHistory().catch(() => {});
     detectOwnAccount({ silent: true }).catch(() => {});
   })();
 

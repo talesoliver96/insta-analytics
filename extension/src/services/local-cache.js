@@ -119,39 +119,17 @@ window.InstaAnalytics = window.InstaAnalytics || {};
     };
   }
 
-  async function writeCompressedStore(store, { allowDestructiveRetry = true } = {}) {
+  async function writeCompressedStore(store) {
+    // Never remove or truncate the existing history to recover from quota errors.
+    // chrome.storage.local.set is atomic for this single key: a failed write
+    // leaves the previous value intact.
     try {
       await chrome.storage.local.set({ [SNAPSHOT_KEY]: store });
-      return;
     } catch (error) {
-      const quotaError = /quota|QUOTA_BYTES|kQuotaBytes/i.test(
+      throw new Error(
+        "Não foi possível salvar por falta de espaço. Seu histórico anterior foi preservado. " +
         String(error?.message || error)
       );
-
-      if (!quotaError || !allowDestructiveRetry) {
-        throw error;
-      }
-
-      // O store comprimido já está em memória. Remove somente a chave antiga
-      // e grava imediatamente a versão comprimida.
-      await chrome.storage.local.remove(SNAPSHOT_KEY);
-
-      try {
-        await chrome.storage.local.set({ [SNAPSHOT_KEY]: store });
-      } catch (retryError) {
-        // Último fallback: mantém os 20 snapshots mais recentes por conta.
-        const reduced = {
-          version: STORE_VERSION,
-          codec: CODEC,
-          accounts: {}
-        };
-
-        for (const [username, records] of Object.entries(store.accounts || {})) {
-          reduced.accounts[username] = (records || []).slice(0, 20);
-        }
-
-        await chrome.storage.local.set({ [SNAPSHOT_KEY]: reduced });
-      }
     }
   }
 

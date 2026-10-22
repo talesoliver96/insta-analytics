@@ -8,26 +8,32 @@ window.InstaAnalytics = window.InstaAnalytics || {};
   function evaluateQuality({ expectedFollowers, expectedFollowing, followers, following, followersMeta, followingMeta }) {
     const actualFollowers = Array.isArray(followers) ? followers.length : 0;
     const actualFollowing = Array.isArray(following) ? following.length : 0;
-    const knownFollowers = Number.isFinite(Number(expectedFollowers)) && Number(expectedFollowers) >= 0;
-    const knownFollowing = Number.isFinite(Number(expectedFollowing)) && Number(expectedFollowing) >= 0;
+    const knownFollowers = expectedFollowers !== null && expectedFollowers !== undefined && expectedFollowers !== "" && Number.isFinite(Number(expectedFollowers)) && Number(expectedFollowers) >= 0;
+    const knownFollowing = expectedFollowing !== null && expectedFollowing !== undefined && expectedFollowing !== "" && Number.isFinite(Number(expectedFollowing)) && Number(expectedFollowing) >= 0;
 
     const expFollowers = knownFollowers ? Number(expectedFollowers) : null;
     const expFollowing = knownFollowing ? Number(expectedFollowing) : null;
 
     if (!knownFollowers || !knownFollowing) {
-      const paginationCompleted = followersMeta?.completed === true && followingMeta?.completed === true;
+      const metas = [followersMeta, followingMeta];
+      const complete = metas.every(m => m?.completed === true && m?.stopReason === "end_of_pagination" && Number(m?.pages) > 0);
+      const integrity = metas.every(m => Number(m?.invalidTotal ?? 0) === 0 &&
+        Number(m?.collected) >= 0 &&
+        Number(m?.receivedTotal) >= Number(m?.collected) &&
+        Array.isArray(m?.pageStats) && m.pageStats.length === m.pages &&
+        m.pageStats.at(-1)?.hasNext === false);
+      const credible = complete && integrity && actualFollowers > 0 && actualFollowing > 0 &&
+        followersMeta.collected === actualFollowers && followingMeta.collected === actualFollowing;
       return {
-        status: paginationCompleted ? "unverified" : "unknown",
-        comparisonEligible: paginationCompleted,
-        actualFollowers,
-        actualFollowing,
-        expectedFollowers: expFollowers,
-        expectedFollowing: expFollowing,
-        followersMeta: followersMeta || null,
-        followingMeta: followingMeta || null,
-        reason: paginationCompleted
-          ? "Paginação finalizada, mas o Instagram não informou contadores confiáveis."
-          : "Não foi possível validar a integridade da coleta."
+        status: credible ? "unverified" : "unknown",
+        comparisonEligible: credible,
+        verificationMethod: credible ? "end_of_pagination" : "none",
+        actualFollowers, actualFollowing,
+        expectedFollowers: expFollowers, expectedFollowing: expFollowing,
+        followersMeta: followersMeta || null, followingMeta: followingMeta || null,
+        reason: credible
+          ? "Paginação concluída e consistente; contadores externos indisponíveis. Comparações ainda exigem confirmação."
+          : "Coleta sem contadores não passou nas verificações de paginação e integridade."
       };
     }
 
@@ -37,9 +43,13 @@ window.InstaAnalytics = window.InstaAnalytics || {};
     const followingMissing = Math.max(0, expFollowing - actualFollowing);
 
     const followersSuspicious =
+      (expFollowers === 0 && actualFollowers > 0) ||
+      (expFollowers > 0 && actualFollowers > expFollowers + MISSING_TOLERANCE) ||
       followersMissing > MISSING_TOLERANCE &&
       followersRatio < MIN_RATIO;
     const followingSuspicious =
+      (expFollowing === 0 && actualFollowing > 0) ||
+      (expFollowing > 0 && actualFollowing > expFollowing + MISSING_TOLERANCE) ||
       followingMissing > MISSING_TOLERANCE &&
       followingRatio < MIN_RATIO;
 
@@ -49,7 +59,10 @@ window.InstaAnalytics = window.InstaAnalytics || {};
       followersMeta?.stopReason === "short_of_expected_after_retries" ||
       followingMeta?.stopReason === "short_of_expected_after_retries";
 
-    const suspicious = followersSuspicious || followingSuspicious || collectorShort;
+    const suspicious = followersSuspicious || followingSuspicious || collectorShort ||
+      followersMeta?.completed !== true || followingMeta?.completed !== true ||
+      actualFollowers === 0 && expFollowers > 0 ||
+      actualFollowing === 0 && expFollowing > 0;
 
     return {
       status: suspicious ? "suspicious" : "valid",
@@ -66,7 +79,7 @@ window.InstaAnalytics = window.InstaAnalytics || {};
       followingMeta: followingMeta || null,
       reason: suspicious
         ? `Coleta incompleta: seguidores ${actualFollowers}/${expFollowers}, seguindo ${actualFollowing}/${expFollowing}. Esta coleta não será usada para confirmar mudanças.`
-        : "Coleta validada pelos contadores do perfil."
+        : "Coleta concluída e consistente com os contadores do perfil."
     };
   }
 

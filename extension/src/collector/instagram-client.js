@@ -2,6 +2,30 @@ window.InstaAnalytics = window.InstaAnalytics || {};
 (() => {
   const APP_ID = "936619743392459";
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const RATE_LIMIT_KEY = "ia_instagram_rate_limit_until_v1";
+  let rateLimitUntil = 0;
+  let lastRequestAt = 0;
+  let queue = Promise.resolve();
+  let detectionInFlight = null;
+  async function respectRateLimit() {
+    const stored = await chrome.storage.local.get(RATE_LIMIT_KEY);
+    rateLimitUntil = Math.max(rateLimitUntil, Number(stored[RATE_LIMIT_KEY] || 0));
+    if (Date.now() < rateLimitUntil) {
+      throw makeInstagramError("O Instagram limitou as consultas. Aguarde antes de tentar novamente.", "RATE_LIMITED", { retryAfterMs: rateLimitUntil - Date.now() });
+    }
+  }
+  async function serializedFetch(url, options) {
+    const task = queue.catch(() => {}).then(async () => {
+      await respectRateLimit();
+      const delay = Math.max(0, 2200 - (Date.now() - lastRequestAt));
+      if (delay) await sleep(delay);
+      await respectRateLimit();
+      lastRequestAt = Date.now();
+      return fetch(url, options);
+    });
+    queue = task.catch(() => {});
+    return task;
+  }
 
   function makeInstagramError(message, code, extra = {}) {
     const error = new Error(message);
@@ -15,7 +39,7 @@ window.InstaAnalytics = window.InstaAnalytics || {};
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        const response = await fetch(url, {
+        const response = await serializedFetch(url, {
           credentials: "include",
           headers: {
             accept: "application/json",
@@ -35,6 +59,12 @@ window.InstaAnalytics = window.InstaAnalytics || {};
         }
 
         if (response.status === 429) {
+          const retryAfter = response.headers.get("retry-after");
+          const seconds = /^\d+$/.test(retryAfter || "") ? Number(retryAfter) : null;
+          const parsedDate = retryAfter && seconds === null ? Date.parse(retryAfter) : NaN;
+          const duration = seconds !== null ? seconds * 1000 : Number.isFinite(parsedDate) ? parsedDate - Date.now() : 60 * 60 * 1000;
+          rateLimitUntil = Date.now() + Math.max(60 * 1000, Math.min(duration, 24 * 60 * 60 * 1000));
+          await chrome.storage.local.set({ [RATE_LIMIT_KEY]: rateLimitUntil });
           throw makeInstagramError(
             "O Instagram limitou temporariamente as requisições.",
             "RATE_LIMITED",
@@ -106,6 +136,7 @@ window.InstaAnalytics = window.InstaAnalytics || {};
           throw error;
         }
 
+        if (error.httpStatus === 404 || (error.httpStatus >= 400 && error.httpStatus < 500)) throw error;
         if (attempt < 2) {
           await sleep(
             2000 * (attempt + 1) +
@@ -120,7 +151,7 @@ window.InstaAnalytics = window.InstaAnalytics || {};
     );
   }
 
-  async function detectCurrentInstagramAccount() {
+  async function detectCurrentInstagramAccountImpl() {
     const data = await requestJson(
       "https://www.instagram.com/api/v1/accounts/edit/web_form_data/",
       "detecção da conta atual"
@@ -146,14 +177,18 @@ window.InstaAnalytics = window.InstaAnalytics || {};
       profilePic: raw.profile_pic_url || raw.profile_pic_url_hd || "",
       isPrivate: !!raw.is_private,
       isVerified: !!raw.is_verified,
-      followerCount: Number(raw.follower_count || 0),
-      followingCount: Number(raw.following_count || 0)
+      followerCount: raw.follower_count == null ? null : Number(raw.follower_count),
+      followingCount: raw.following_count == null ? null : Number(raw.following_count)
     };
 
-    if (!userId && window.InstaAnalytics.resolveProfile) {
-      const resolved = await window.InstaAnalytics.resolveProfile(username);
-      userId = String(resolved.userId || "");
-      profileInfo = { ...resolved.profileInfo, ...profileInfo, username };
+    if (!userId) {
+      // Only use an ID previously validated and saved for this same username.
+      // No additional profile lookup: that endpoint can independently return 429.
+      const cached = await window.InstaAnalytics.loadLocalAccount?.(username);
+      if (cached?.userId && cached.username === username) {
+        userId = String(cached.userId);
+        profileInfo = { ...cached, ...profileInfo, username };
+      }
     }
 
     if (!userId) {
@@ -167,7 +202,22 @@ window.InstaAnalytics = window.InstaAnalytics || {};
     return { userId, username, ...profileInfo, profileInfo };
   }
 
+  // Coalesce overlapping refresh/collect detection into one authenticated request.
+  async function detectCurrentInstagramAccount() {
+    if (detectionInFlight) return detectionInFlight;
+    detectionInFlight = detectCurrentInstagramAccountImpl();
+    try { return await detectionInFlight; }
+    finally { detectionInFlight = null; }
+  }
+
+  async function getInstagramRequestStatus() {
+    const stored = await chrome.storage.local.get(RATE_LIMIT_KEY);
+    const until = Math.max(rateLimitUntil, Number(stored[RATE_LIMIT_KEY] || 0));
+    return { limited: until > Date.now(), retryAfterMs: Math.max(0, until - Date.now()), until };
+  }
+
   Object.assign(window.InstaAnalytics, {
+    getInstagramRequestStatus,
     requestJson,
     sleep,
     detectCurrentInstagramAccount
