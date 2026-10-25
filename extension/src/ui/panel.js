@@ -15,7 +15,8 @@ window.InstaAnalytics = window.InstaAnalytics || {};
     ["followers", "Seguidores"],
     ["following", "Seguindo"],
     ["notFollowingBack", "Não seguem de volta"],
-    ["unfollows", "Unfollows"],
+    ["unfollows", "Todos os unfollows"],
+    ["followedUnfollows", "Unfollows de quem sigo"],
     ["newFollowers", "Novos seguidores"],
     ["youUnfollowed", "Você deixou de seguir"],
     ["youStartedFollowing", "Você começou a seguir"],
@@ -214,10 +215,22 @@ window.InstaAnalytics = window.InstaAnalytics || {};
     };
   }
 
+  // Subconjunto dos unfollows: somente contas que você ainda segue.
+  // Não consulta os seguidores de terceiros; usa apenas seus snapshots.
+  function onlyAccountsIFollow(users, snapshot = currentSnapshot) {
+    const following = snapshot?.following || [];
+    const ids = new Set(following.map((u) => String(u?.id || u?.pk || "")).filter(Boolean));
+    const names = new Set(following.map((u) => String(u?.username || "").toLowerCase()).filter(Boolean));
+    return (users || []).filter((u) =>
+      (u?.id && ids.has(String(u.id))) || names.has(String(u?.username || "").toLowerCase())
+    );
+  }
+
   function pendingListForPage(page, snapshot = currentSnapshot) {
     const pending = getPendingDiff(snapshot);
     const map = {
       unfollows: pending.unfollows || [],
+      followedUnfollows: onlyAccountsIFollow(pending.unfollows, snapshot),
       newFollowers: pending.newFollowers || [],
       youUnfollowed: pending.youUnfollowed || [],
       youStartedFollowing: pending.youStartedFollowing || []
@@ -228,6 +241,7 @@ window.InstaAnalytics = window.InstaAnalytics || {};
   function isConfirmationPage(page) {
     return [
       "unfollows",
+      "followedUnfollows",
       "newFollowers",
       "youUnfollowed",
       "youStartedFollowing"
@@ -239,6 +253,7 @@ window.InstaAnalytics = window.InstaAnalytics || {};
     const map = {
       newFollowers: plural ? "possíveis novos seguidores" : "possível novo seguidor",
       unfollows: plural ? "possíveis unfollows" : "possível unfollow",
+      followedUnfollows: plural ? "possíveis unfollows de quem você segue" : "possível unfollow de quem você segue",
       youStartedFollowing: plural ? "possíveis perfis que você começou a seguir" : "possível perfil que você começou a seguir",
       youUnfollowed: plural ? "possíveis perfis que você deixou de seguir" : "possível perfil que você deixou de seguir"
     };
@@ -292,6 +307,7 @@ window.InstaAnalytics = window.InstaAnalytics || {};
         ${statCard(currentSnapshot.following?.length, "Seguindo", "following")}
         ${statCard(diff.notFollowingBack?.length, "Não seguem de volta", "notFollowingBack")}
         ${statCard(diff.unfollows?.length, "Unfollows", "unfollows")}
+        ${statCard(onlyAccountsIFollow(diff.unfollows, currentSnapshot).length, "Unfollows de quem sigo", "followedUnfollows")}
       </section>
 
       <section class="ia-card">
@@ -321,6 +337,7 @@ window.InstaAnalytics = window.InstaAnalytics || {};
       following: snapshot?.following || [],
       notFollowingBack: diff.notFollowingBack || [],
       unfollows: diff.unfollows || [],
+      followedUnfollows: onlyAccountsIFollow(diff.unfollows, snapshot),
       newFollowers: diff.newFollowers || [],
       youUnfollowed: diff.youUnfollowed || [],
       youStartedFollowing: diff.youStartedFollowing || []
@@ -367,7 +384,7 @@ window.InstaAnalytics = window.InstaAnalytics || {};
         </div>
       </section>
 
-      ${page === "unfollows" ? `<section class="ia-info-note">A ausência na lista é detectada por comparação. Conta desativada, removida, bloqueio ou indisponibilidade podem parecer um unfollow; por isso esta lista deve ser lida como <strong>unfollows detectados</strong>, não confirmação absoluta.</section>` : ""}
+      ${["unfollows", "followedUnfollows"].includes(page) ? `<section class="ia-info-note">A ausência na lista é detectada por comparação. Conta desativada, removida, bloqueio ou indisponibilidade podem parecer um unfollow; por isso esta lista deve ser lida como <strong>unfollows detectados</strong>, não confirmação absoluta.</section>` : ""}
 
       ${hasConfirmationContext && pendingSource.length
         ? `<section class="ia-confirmation-banner compact">
@@ -380,6 +397,7 @@ window.InstaAnalytics = window.InstaAnalytics || {};
           </section>`
         : ""}
 
+      ${page === "followedUnfollows" ? `<section class="ia-info-note">Aqui aparecem apenas perfis que sumiram da sua lista de seguidores e que você <strong>ainda segue</strong>. Não é uma análise dos seguidores de outras pessoas.</section>` : ""}
       <div class="ia-filter-wrap">
         <input id="ia-filter" value="${escapeHtml(filterText)}" placeholder="Buscar por usuário ou nome">
       </div>
@@ -423,7 +441,11 @@ window.InstaAnalytics = window.InstaAnalytics || {};
 
     root.querySelector("#ia-filter")?.addEventListener("input", (event) => {
       filterText = event.target.value || "";
+      const position = event.target.selectionStart;
       renderListPage(page);
+      const input = root.querySelector("#ia-filter");
+      input?.focus();
+      if (input && position !== null) input.setSelectionRange(position, position);
     });
 
     bindConfirmationButtons(root.querySelector("#ia-content"));
@@ -566,7 +588,11 @@ window.InstaAnalytics = window.InstaAnalytics || {};
 
     root.querySelector("#ia-detail-search")?.addEventListener("input", (event) => {
       filterText = event.target.value || "";
+      const position = event.target.selectionStart;
       renderHistoryDetail();
+      const input = root.querySelector("#ia-detail-search");
+      input?.focus();
+      if (input && position !== null) input.setSelectionRange(position, position);
     });
   }
 
