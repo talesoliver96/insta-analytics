@@ -192,8 +192,33 @@ window.InstaAnalytics = window.InstaAnalytics || {};
     }
 
     if (!userId) {
+      // The authenticated edit endpoint sometimes omits pk/id on new accounts.
+      // Resolve ONLY the username returned by that authenticated endpoint;
+      // never infer the identity from the page being viewed.
+      try {
+        const resolved = await window.InstaAnalytics.resolveProfile(username);
+        if (resolved?.userId && resolved?.profileInfo?.username === username) {
+          userId = String(resolved.userId);
+          profileInfo = {
+            ...resolved.profileInfo,
+            ...Object.fromEntries(Object.entries(profileInfo).filter(([key, value]) =>
+              value !== null && value !== undefined && value !== ""
+            )),
+            username
+          };
+          console.info("[Insta Analytics] ID da conta obtido por consulta complementar do perfil autenticado.");
+        }
+      } catch (error) {
+        if (["RATE_LIMITED", "INSTAGRAM_AUTH", "INSTAGRAM_TEMPORARILY_BLOCKED"].includes(error.code) || error.httpStatus === 429) {
+          throw error;
+        }
+        console.warn("[Insta Analytics] Consulta complementar indisponível:", error.code || error.httpStatus || "erro");
+      }
+    }
+
+    if (!userId) {
       const error = new Error(
-        "Não foi possível obter o ID da conta logada no Instagram."
+        "O Instagram identificou @" + username + ", mas não disponibilizou o ID da conta. Aguarde e tente Atualizar usuário novamente."
       );
       error.code = "INSTAGRAM_ACCOUNT_NOT_DETECTED";
       throw error;
